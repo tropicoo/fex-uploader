@@ -6,142 +6,149 @@ import os
 import sys
 import time
 
-from fex.api import Api
-from fex.configurator import Configurator
+from fex.api import API
 from fex.constants import HOST
 from fex.printer import Printer
 from fex.uploader import Uploader
-from fex.exceptions import UserLoginError, OwnObjectError
+from fex.exceptions import UserLoginError, OwnObjectError, ConfigError
 from fex.object import Object
 from fex.utils import convert_size
 
 
 class Fex:
-    def __init__(self):
-        args = self.parse_args()
-        self._obj = Object(args)
-        self._api = Api(obj=self._obj)
+    def __init__(self, arguments):
+        self._log = logging.getLogger(self.__class__.__name__)
+        self._obj = Object(arguments)
+        self._api = API(obj=self._obj)
         self._printer = Printer(obj=self._obj)
         self._upload = Uploader(api=self._api, printer=self._printer,
-                               obj=self._obj).upload
-        self._configurator = Configurator()
+                                obj=self._obj).upload
         self._host = 'https://{0}'.format(HOST)
-        self._log = logging.getLogger(self.__class__.__name__)
+        self._fex_actions = {
+            'upload': '_upload',
+            'own_object_id': 'own_objects',
+            'is_list_dirs': 'list_folders',
+            'object_id_info': 'print_object_info',
+            'is_list_objects': 'list_objects'
+        }
 
     def run(self):
-        self._log.debug(
-            'Listing object\'s attributes: {0}'.format(vars(self._obj)))
-        login, action = self._configurator.configure(self._obj)
+        self._log.debug('Listing object\'s attributes: {0}'.format(
+                                                              vars(self._obj)))
 
-        if login:
+        if self._obj.username and self._obj.password:
             self._login()
+        elif self._obj.is_anonymous or self._obj.object_id_info or \
+                self._obj.is_list_dirs:
+            pass
+        else:
+            raise ConfigError('Bad login arguments, please verify')
 
-        fex_method = getattr(self, action)
-        fex_method()
+        if self._obj.own_object_id:
+            # self._own_objects()
+            pass
+        elif self._obj.object_id_info:
+            self._print_object_info()
+        elif self._obj.is_list_dirs:
+            self._list_folders()
+        elif self._obj.is_list_objects:
+            self._list_objects()
+        else:
+            self._upload()
 
     def _login(self):
-        if self._obj.is_force:
-            self._log.info('Force login')
-            self._api.purge_cookies()
+        try:
+            if self._obj.is_force:
+                self._log.info('Force login')
+                self._api.purge_cookies()
 
-        if not self._api.process_cookies():
-            self._log.debug('Trying to log in')
-            credentials = {'login': self._obj.username,
-                           'password': self._obj.password}
-            login_response = self._api.get_signin(data=credentials)
-            login_state, login_msg = self._verify_login(login_response)
-
-            if login_state:
-                self._log.info('\n'.join(login_msg))
-                self._api.save_cookies()
-            else:
-                raise UserLoginError('\n'.join(login_msg))
+            if not self._api.process_cookies():
+                self._log.debug('Trying to log in')
+                credentials = {'login': self._obj.username,
+                               'password': self._obj.password}
+                response = self._api.get_signin(credentials=credentials)
+                self._verify_login(response)
+        except UserLoginError as err:
+            # TBD
+            # log to stdoerr
+            sys.exit(str(err))
 
     def _verify_login(self, response):
-        # TODO: Refactor control flag; raise on non-successful
-        return_state = False
-
         if response.get('result') \
                 and (response.get('login') == self._obj.username
                      or response.get('user', 0).get(
                     'login') == self._obj.username):
-            msg = ['Login successful']
-            return_state = True
-        elif not response.get('result') \
-                and not response.get('captcha'):
-            msg = ['Authentication error, check credentials',
-                   'Response data: {0}'.format(response.text),
-                   'Cookies: {0}'.format(response.cookies)]
+            self._log.info('Login successful')
+        elif not response.get('result') and not response.get('captcha'):
+            err_msg = 'Authentication error, verify credentials'
+            self._log.error(err_msg)
+            self._log.debug('Response data: {0}'.format(response.text))
+            self._log.debug('Cookies: {0}'.format(response.cookies))
+            raise UserLoginError(err_msg)
         elif response.get('captcha'):
-            msg = ['Authentication error, captcha request',
-                   'Response data: {0}'.format(response.text)]
-        elif not response.get('result') \
-                and len(response.keys()) == 1:
-            msg = ['Are you uploading to non-existing Object ID?',
-                   'Response data: {0}'.format(response.text)]
+            err_msg = 'Authentication error, captcha request'
+            self._log.error(err_msg)
+            self._log.debug('Response data: {0}'.format(response.text))
+            raise UserLoginError(err_msg)
+        elif not response.get('result') and len(response.keys()) == 1:
+            err_msg = 'Are you uploading to non-existing Object ID?'
+            self._log.error(err_msg)
+            self._log.debug('Response data: {0}'.format(response.text))
+            raise UserLoginError(err_msg)
         else:
-            msg = ['Can\'t verify login due to an unknown error',
-                   'Response data: {0}'.format(response.text)]
+            err_msg = 'Can\'t verify login due to an unknown error'
+            self._log.error(err_msg)
+            self._log.debug('Response data: {0}'.format(response.text))
+            raise UserLoginError(err_msg)
 
-        return return_state, msg
+    # def _own_objects(self, object_ids, view_password):
+    #     object_ids = kwargs.get('own_object_id')
+    #     view_password = kwargs.get('view_password')
+    #     msgs = []
+    #     got_view = False
+    #
+    #     for object_id in object_ids:
+    #         self._log.info('Owning object {0}'.format(object_id))
+    #         if view_password and not got_view:
+    #             self._api.get_object_view(object_id,
+    #                                      view_password=view_password)
+    #             msgs.append(['Object password', '{0}'.format(view_password)])
+    #             got_view = True
+    #
+    #         r = self._api.get_object_own(object_id)
+    #
+    #         if r.get('result'):
+    #             msgs.extend(
+    #                 [['Object {0}'.format(object_id), 'Successfully owned'],
+    #                  ['Object URL', '{0}/#!{1}'.format(self._host, object_id)],
+    #                  ['Owner', '{0}'.format(self._obj.username)]])
+    #             self._printer.print_on_complete(msgs)
+    #         else:
+    #             raise OwnObjectError(
+    #                 'Own failed for object {0}'.format(object_id))
 
-    def own_objects(self, **kwargs):
-        object_ids = kwargs.get('own_object_id')
-        view_password = kwargs.get('view_password')
-        msgs = []
-        got_view = False
-
-        for object_id in object_ids:
-            self._log.info('Owning object {0}'.format(object_id))
-            if view_password and not got_view:
-                self._api.get_object_view(object_id,
-                                         view_password=view_password)
-                msgs.append(['Object password', '{0}'.format(view_password)])
-                got_view = True
-
-            r = self._api.get_object_own(object_id)
-
-            if r.get('result'):
-                msgs.extend(
-                    [['Object {0}'.format(object_id), 'Successfully owned'],
-                     ['Object URL', '{0}/#!{1}'.format(self._host, object_id)],
-                     ['Owner', '{0}'.format(self._obj.username)]])
-                self._printer.print_on_complete(msgs)
-            else:
-                raise OwnObjectError(
-                    'Own failed for object {0}'.format(object_id))
-
-    def print_object_info(self, **kwargs):
-        object_ids = kwargs.get('object_id_info')
-        view_password = kwargs.get('view_password')
+    def _print_object_info(self, object_id_info, view_password):
         msgs = []
 
-        for object_id in object_ids:
+        for object_id in object_id_info:
             view_response = self._api.get_object_view(object_id,
                                                      view_password=view_password)
-
             if view_password:
-                msgs.append(
-                    'Object password       : {0}'.format(view_password))
+                msgs.append('Object password       : {0}'.format(view_password))
 
             if view_response.get('result'):
                 for k, v in view_response.items():
                     msgs.append('{0}: {1}'.format(k, v))
-                msgs.append(
-                    'Object URL            : {0}/#!{1}'.format(self._host,
+                msgs.append('Object URL            : {0}/#!{1}'.format(self._host,
                                                                object_id))
                 self._printer.print_on_complete(msgs)
             else:
                 print('Can\'t get info, wrong password?')
 
-    def list_folders(self, **kwargs):
-        object_id = kwargs.get('object_id')
-        view_password = kwargs.get('view_password')
+    def _list_folders(self, object_id, view_password):
         self._api.process_cookies()
-
         view_response = self._api.get_object_view(object_id,
                                                  view_password=view_password)
-
         if view_response.get('result'):
             upload_list = view_response.get('upload_list')
             self._log.info('Fetching data and building folder list...')
@@ -155,9 +162,8 @@ class Fex:
             self._log.error(
                 'Can\'t get info, wrong password or private object?')
 
-    def list_objects(self):
-        response = self._api.get_home()
-        objects_list = response.get('object_list')
+    def _list_objects(self):
+        objects_list = self._api.get_home()
         objects = [(obj.get('preview'),
                     obj.get('token'),
                     obj.get('login'),
@@ -214,73 +220,6 @@ class Fex:
         dirs = sorted(dirs, key=lambda x: x[2].lower())
         return dirs
 
-    def parse_args(self):
-        # TODO: Move back to '__main__'
-        parser = argparse.ArgumentParser(description='FEX.net uploader')
-        group = parser.add_argument_group('user upload')
-        parser.add_argument('-a', '--anonymous', action='store_true',
-                            default=False,
-                            dest='is_anonymous',
-                            help='upload anonymously')
-        group.add_argument('-u', '--user', action='store', dest='username',
-                           help='set a username')
-        group.add_argument('-p', '--password', action='store', dest='password',
-                           help='set a password')
-        parser.add_argument('-s', '--secret', action='store', dest='secret',
-                            help='set a password for an object')
-        parser.add_argument('--hint', action='store', dest='hint',
-                            help='set a password hint for an object')
-        group.add_argument('-o', '--object', action='store', dest='object_id',
-                           help='set an object id')
-        group.add_argument('-f', '--file', action='store', dest='file_list',
-                           help='file name(s)', nargs='+')
-        parser.add_argument('--view-password', action='store',
-                            dest='view_password',
-                            help='object\'s password')
-        parser.add_argument('--object-name', action='store',
-                            dest='object_name',
-                            help='object\'s name')
-        parser.add_argument('--object-description', action='store',
-                            dest='object_description',
-                            help='object\'s description')
-        parser.add_argument('-d', '--dir', action='store', dest='dir_path',
-                            help='take files from directory')
-        parser.add_argument('--force', action='store_true', default=False,
-                            dest='is_force',
-                            help='force login')
-        parser.add_argument('--verify', action='store_true', default=False,
-                            dest='is_verify',
-                            help='verify checksums')
-        parser.add_argument('--own', action='store', dest='own_object_id',
-                            help='inherit object', nargs='+')
-        parser.add_argument('--folder-create', action='store',
-                            dest='folder_create',
-                            help='create folder with name')
-        parser.add_argument('--folder', action='store', dest='folder_id',
-                            help='upload to folder id')
-        parser.add_argument('--list-dirs', action='store_true', default=False,
-                            dest='is_list_dirs',
-                            help='list folders for object')
-        parser.add_argument('--list-objects', action='store_true',
-                            default=False, dest='is_list_objects',
-                            help='list objects')
-        parser.add_argument('--public', default=None,
-                            choices=('true', 'false'), dest='public',
-                            help='make object public or private, default true')
-        parser.add_argument('--info', action='store', dest='object_id_info',
-                            help='print object info', nargs='+')
-        parser.add_argument('--version', action='version',
-                            version='%(prog)s 0.1')
-
-        args = parser.parse_args()
-        args_dict = vars(args)
-
-        if not len(sys.argv) > 1:
-            parser.print_help()
-            sys.exit(1)
-
-        return args_dict
-
 
 if __name__ == '__main__':
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -289,5 +228,68 @@ if __name__ == '__main__':
         '{0}.log'.format(os.path.splitext(os.path.basename(__file__))[0]))
     file_handler.setFormatter(logging.Formatter(log_format))
 
-    fex = Fex()
+    parser = argparse.ArgumentParser(description='FEX.net uploader')
+    group = parser.add_argument_group('user upload')
+    parser.add_argument('-a', '--anonymous', action='store_true',
+                        default=False,
+                        dest='is_anonymous',
+                        help='upload anonymously')
+    group.add_argument('-u', '--user', action='store', dest='username',
+                       help='set a username')
+    group.add_argument('-p', '--password', action='store', dest='password',
+                       help='set a password')
+    parser.add_argument('-s', '--secret', action='store', dest='secret',
+                        help='set a password for an object')
+    parser.add_argument('--hint', action='store', dest='hint',
+                        help='set a password hint for an object')
+    group.add_argument('-o', '--object', action='store', dest='object_id',
+                       help='set an object id')
+    group.add_argument('-f', '--file', action='store', dest='file_list',
+                       help='file name(s)', nargs='+')
+    parser.add_argument('--view-password', action='store',
+                        dest='view_password',
+                        help='object\'s password')
+    parser.add_argument('--object-name', action='store',
+                        dest='object_name',
+                        help='object\'s name')
+    parser.add_argument('--object-description', action='store',
+                        dest='object_description',
+                        help='object\'s description')
+    parser.add_argument('-d', '--dir', action='store', dest='dir_path',
+                        help='take files from directory')
+    parser.add_argument('--force', action='store_true', default=False,
+                        dest='is_force',
+                        help='force login')
+    parser.add_argument('--verify', action='store_true', default=False,
+                        dest='is_verify',
+                        help='verify checksums')
+    parser.add_argument('--own', action='store', dest='own_object_id',
+                        help='inherit object', nargs='+')
+    parser.add_argument('--folder-create', action='store',
+                        dest='folder_create',
+                        help='create folder with name')
+    parser.add_argument('--folder', action='store', dest='folder_id',
+                        help='upload to folder id')
+    parser.add_argument('--list-dirs', action='store_true', default=False,
+                        dest='is_list_dirs',
+                        help='list folders for object')
+    parser.add_argument('--list-objects', action='store_true',
+                        default=False, dest='is_list_objects',
+                        help='list objects')
+    parser.add_argument('--public', default=None,
+                        choices=('true', 'false'), dest='public',
+                        help='make object public or private, default true')
+    parser.add_argument('--info', action='store', dest='object_id_info',
+                        help='print object info', nargs='+')
+    parser.add_argument('--version', action='version',
+                        version='%(prog)s 0.1')
+
+    args = parser.parse_args()
+    args_dict = vars(args)
+
+    if not len(sys.argv) > 1:
+        parser.print_help()
+        sys.exit(1)
+
+    fex = Fex(args_dict)
     fex.run()

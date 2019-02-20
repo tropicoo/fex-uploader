@@ -55,6 +55,6 @@ class Printer:
         return msgs
 
     def print_on_complete(self, data, headers=None, showindex=None):
-        if headers is None:
+        if not headers:
             headers = []
         self._log.info(tabulate(data, headers=headers, showindex=showindex))

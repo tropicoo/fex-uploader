@@ -134,24 +134,21 @@ class Uploader:
         return sha1_state, sha1_local, crc32_state, crc32_local
 
     def _object_create(self):
-        r = self._api.get_object_create()
-        object_id = r.get('token')
-        upload_server = self._parse_upload_server(r)
-        return upload_server, object_id
+        return self._api.get_object_create()
 
     def _get_upload_server(self, view_password=None):
-        r = self._api.get_object_view(view_password=view_password,
+        res = self._api.get_object_view(view_password=view_password,
                                      object_id=self._obj.object_id)
-        if r.get('can_edit'):
-            upload_server = self._parse_upload_server(r)
-            return upload_server, r, None
+        if res.get('can_edit'):
+            upload_server = res.get('fs_upload')[0]
+            return upload_server, res, None
         else:
             msg = 'You don\'t have permissions to upload to this Object'
             return None, None, msg
 
-    @staticmethod
-    def _parse_upload_server(r):
-        return r.get('fs_upload')[0]
+    # @staticmethod
+    # def _parse_upload_server(r):
+    #     return r.get('fs_upload')[0]
 
     def _set_object_permissions(self, public, status):
         if status == 1 and public == 'true':

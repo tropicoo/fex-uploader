@@ -8,3 +8,6 @@ class UserLoginError(Exception):
 
 class OwnObjectError(Exception):
     pass
+
+class APIError(Exception):
+    pass
